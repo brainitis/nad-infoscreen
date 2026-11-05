@@ -1,0 +1,41 @@
+# NAD Info Screen: rebuild the WildStream playlist every time the media folder changes.
+name: Update info screen
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install converters (GIF/MOV/HEIC -> MP4/JPG)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libheif-examples
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Build playlist.csv
+        run: python3 scripts/make_playlist.py --media media --out _site --base-url "${{ steps.pages.outputs.base_url }}"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
