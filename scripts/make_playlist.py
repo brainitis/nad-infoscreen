@@ -8,13 +8,20 @@ writes playlist.csv in WildStream's format:
 
     Title,URL,Description,Type,DisplayDuration
 
+Order:
+    Files are shown in RANDOM order. The order is reshuffled only when files are
+    added or removed (same set of files -> same order on every rebuild).
+    Files whose name starts with "00" (e.g. 00_Velkommen.jpg) are pinned:
+    they always come first, in alphabetical order.
+
 Filename conventions (optional):
-    01_Velkommen.jpg          -> order is alphabetical, so number prefixes set the order
     Velkommen__15s.jpg        -> show this photo for 15 seconds (default: 10)
     Logo-animation__8s.gif    -> GIF is converted to an 8-second looping MP4
 """
 import argparse
 import csv
+import hashlib
+import random
 import re
 import shutil
 import subprocess
@@ -61,6 +68,14 @@ def main() -> int:
          if p.is_file() and not p.name.startswith(".") and p.name != "Icon\r"),
         key=lambda p: p.name.casefold(),
     )
+    # Pinned items ("00..." names) first, in alphabetical order; the rest shuffled.
+    # The shuffle seed is the set of file names, so the order only changes
+    # when a file is added, removed or renamed.
+    pinned = [p for p in sources if p.name.startswith("00")]
+    rest = [p for p in sources if not p.name.startswith("00")]
+    seed = hashlib.sha256("\n".join(p.name for p in sources).encode()).hexdigest()
+    random.Random(seed).shuffle(rest)
+    sources = pinned + rest
 
     rows, skipped = [], []
     for n, src in enumerate(sources, start=1):
@@ -69,8 +84,10 @@ def main() -> int:
         m = DURATION_RE.search(stem)
         seconds = int(m.group(1)) if m else DEFAULT_SECONDS
         clean_stem = DURATION_RE.sub("", stem)
-        title = re.sub(r"^\d+[ _.-]*", "", clean_stem).replace("_", " ").replace(",", " -").strip() or clean_stem
-        out_stem = f"{n:03d}-{slug(clean_stem)}"
+        title = re.sub(r"^\d+[a-z]?[ _.-]+", "", clean_stem).replace("_", " ").replace(",", " -").strip() or clean_stem
+        # Stable output name (independent of position), so the Apple TV can keep
+        # its cached copy when the order is reshuffled.
+        out_stem = f"{slug(clean_stem)}-{hashlib.sha1(src.name.encode()).hexdigest()[:6]}"
 
         try:
             if ext in PHOTO_COPY:
