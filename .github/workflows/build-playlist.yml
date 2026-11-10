@@ -1,19 +1,26 @@
-# NAD Info Screen: rebuild the WildStream playlist every time the media folder changes.
+# NAD Info Screen: build the WildStream playlist and publish it on GitHub Pages.
+#
+# Source of the media:
+#   - Google Drive (when the repository variable GDRIVE_FOLDER_ID is set):
+#       checked every 15 minutes; the site is only rebuilt when the folder changed.
+#   - otherwise the repository's media/ folder (Mac sync).
 name: Update info screen
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write      # only used for the keep-alive commit
   pages: write
   id-token: write
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-and-publish:
@@ -24,18 +31,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install converters (GIF/MOV/HEIC -> MP4/JPG)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libheif-examples
-
       - id: pages
         uses: actions/configure-pages@v5
 
+      - name: Fetch media from Google Drive
+        id: fetch
+        if: vars.GDRIVE_FOLDER_ID != ''
+        env:
+          GDRIVE_API_KEY: ${{ secrets.GDRIVE_API_KEY }}
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+          SITE: ${{ steps.pages.outputs.base_url }}
+          FORCE: ${{ github.event_name != 'schedule' }}
+        run: python3 scripts/fetch_gdrive.py --out drive_media
+
+      - name: Install converters (GIF/MOV/HEIC -> MP4/JPG)
+        if: steps.fetch.outputs.changed != 'false'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libheif-examples
+
       - name: Build playlist.csv
-        run: python3 scripts/make_playlist.py --media media --out _site --base-url "${{ steps.pages.outputs.base_url }}"
+        if: steps.fetch.outputs.changed != 'false'
+        run: |
+          python3 scripts/make_playlist.py \
+            --media "${{ steps.fetch.outputs.media_dir || 'media' }}" \
+            --out _site --base-url "${{ steps.pages.outputs.base_url }}"
+          if [ -f drive_state.txt ]; then cp drive_state.txt _site/; fi
 
       - uses: actions/upload-pages-artifact@v3
+        if: steps.fetch.outputs.changed != 'false'
         with:
           path: _site
 
       - id: deployment
+        if: steps.fetch.outputs.changed != 'false'
         uses: actions/deploy-pages@v4
+
+      # GitHub pauses scheduled workflows in repositories without activity for a long
+      # time. An empty commit every ~45 days keeps the 15-minute check running.
+      - name: Keep the schedule active
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( ( $(date +%s) - last ) / 86400 )) -ge 45 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -q -m "Keep scheduled updates active"
+            git push -q
+          fi
