@@ -85,9 +85,14 @@ def main() -> int:
         seconds = int(m.group(1)) if m else DEFAULT_SECONDS
         clean_stem = DURATION_RE.sub("", stem)
         title = re.sub(r"^\d+[a-z]?[ _.-]+", "", clean_stem).replace("_", " ").replace(",", " -").strip() or clean_stem
-        # Stable output name (independent of position), so the Apple TV can keep
-        # its cached copy when the order is reshuffled.
-        out_stem = f"{slug(clean_stem)}-{hashlib.sha1(src.name.encode()).hexdigest()[:6]}"
+        # Output name = name + hash of the file CONTENT: independent of position (the
+        # Apple TV keeps its cached copy when the order is reshuffled), but a file
+        # replaced under the same name gets a new address, so it is downloaded again.
+        h = hashlib.sha1()
+        with open(src, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        out_stem = f"{slug(clean_stem)}-{h.hexdigest()[:8]}"
 
         try:
             if ext in PHOTO_COPY:
