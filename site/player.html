@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<!--
+  NAD Info Screen – browser player
+  Plays the same playlist.csv as WildStream on the Apple TV, in any browser.
+
+  Options (add to the address, e.g. player.html?fade=1.5&sound=1):
+    fade=0.8      cross-fade between items in seconds (0 = hard cut)
+    sound=1       play video sound (most browsers require one click first)
+    refresh=5     minutes between checks for a new playlist
+    csv=URL       use another playlist (default: playlist.csv next to this page)
+-->
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NAD Info Screen – afspiller</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0A0E0D; overflow: hidden; cursor: none; }
+  .layer {
+    position: absolute; inset: 0; opacity: 0;
+    transition: opacity var(--fade, 0.8s) ease;
+  }
+  .layer.show { opacity: 1; }
+  .layer img, .layer video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .note {
+    position: fixed; left: 50%; transform: translateX(-50%); z-index: 9;
+    font: 300 2.2vmin/1.4 Lato, "Helvetica Neue", Arial, sans-serif; color: #EAF2F0;
+    background: rgba(26, 34, 32, 0.88); padding: 1.2vmin 2.4vmin; border-radius: 1vmin;
+    transition: opacity 1s; cursor: default; white-space: nowrap;
+  }
+  #hint { bottom: 6vh; }
+  #status { top: 45vh; }
+  .hide { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="layer" id="a"></div>
+<div class="layer" id="b"></div>
+<div class="note" id="hint">Klik eller tryk på en tast for fuld skærm</div>
+<div class="note hide" id="status"></div>
+
+<script>
+'use strict';
+const P = new URLSearchParams(location.search);
+const FADE = Math.max(0, parseFloat(P.get('fade') ?? '0.8') || 0);
+const SOUND = P.get('sound') === '1';
+const REFRESH_MIN = Math.max(1, parseFloat(P.get('refresh') ?? '5') || 5);
+const CSV_URL = P.get('csv') || 'playlist.csv';
+const LOAD_TIMEOUT_MS = 30000;
+document.documentElement.style.setProperty('--fade', FADE + 's');
+
+const $ = (id) => document.getElementById(id);
+let front = $('a'), back = $('b');
+let playlist = [];      // items playing now
+let pending = null;     // new playlist, applied when the current loop ends
+let idx = -1;
+let failures = 0;
+let prefetch = null;    // { url, promise }
+
+/* ---------- playlist ---------- */
+
+function parseCSV(text) {
+  const rows = []; let row = [], field = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else field += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(field); rows.push(row); row = []; field = '';
+    } else field += c;
+  }
+  if (field !== '' || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+async function loadPlaylist() {
+  try {
+    const sep = CSV_URL.includes('?') ? '&' : '?';
+    const r = await fetch(CSV_URL + sep + 't=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const rows = parseCSV(await r.text()).filter((x) => x.some((f) => f.trim() !== ''));
+    const head = rows.shift().map((h) => h.trim().toLowerCase());
+    const col = (n) => head.indexOf(n);
+    const resolve = (u) => new URL(u.trim(), new URL(CSV_URL, location.href)).href;
+    return rows
+      .filter((r) => (r[col('url')] || '').trim())
+      .map((r) => ({
+        url: resolve(r[col('url')]),
+        video: (r[col('type')] || '').trim().toLowerCase() === 'video',
+        secs: parseFloat(r[col('displayduration')]) || 10,
+      }));
+  } catch (e) {
+    console.warn('Could not load playlist:', e);
+    return null;  // keep playing what we have
+  }
+}
+
+function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
+/* ---------- media ---------- */
+
+function prepare(item) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout ' + item.url)), LOAD_TIMEOUT_MS);
+    const ok = (el) => { clearTimeout(timer); resolve(el); };
+    const fail = () => { clearTimeout(timer); reject(new Error('cannot load ' + item.url)); };
+    if (item.video) {
+      const v = document.createElement('video');
+      v.muted = !SOUND; v.playsInline = true; v.preload = 'auto';
+      v.addEventListener('canplay', () => ok(v), { once: true });
+      v.addEventListener('error', fail, { once: true });
+      v.src = item.url;
+      v.load();
+    } else {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = item.url;
+      img.decode().then(() => ok(img), fail);
+    }
+  });
+}
+
+function startPrefetch() {
+  if (!playlist.length) return;
+  const nextIdx = idx + 1 >= playlist.length ? 0 : idx + 1;
+  const list = (nextIdx === 0 && pending) ? pending : playlist;
+  if (!list.length) return;
+  const item = list[nextIdx];
+  prefetch = { url: item.url, promise: prepare(item) };
+  prefetch.promise.catch(() => {});  // handled when used
+}
+
+/* ---------- loop ---------- */
+
+function status(text) {
+  $('status').textContent = text || '';
+  $('status').classList.toggle('hide', !text);
+}
+
+async function next() {
+  idx++;
+  if (idx >= playlist.length) {
+    idx = 0;
+    if (pending) { playlist = pending; pending = null; }
+  }
+  if (!playlist.length) {
+    status('Venter på playlisten …');
+    idx = -1;
+    setTimeout(next, 30000);
+    return;
+  }
+  const item = playlist[idx];
+
+  let el;
+  try {
+    el = await ((prefetch && prefetch.url === item.url) ? prefetch.promise : prepare(item));
+  } catch (e) {
+    console.warn(e.message);
+    prefetch = null;
+    failures++;
+    if (failures >= playlist.length) {         // nothing can be loaded (offline?)
+      status('Kan ikke hente indhold – prøver igen om lidt');
+      failures = 0;
+      setTimeout(next, 30000);
+    } else {
+      next();
+    }
+    return;
+  }
+  failures = 0;
+  prefetch = null;
+  status('');
+
+  // Cross-fade: put the new item in the hidden layer and swap.
+  back.replaceChildren(el);
+  back.classList.add('show');
+  front.classList.remove('show');
+  [front, back] = [back, front];
+  const old = back;
+  setTimeout(() => {
+    old.querySelectorAll('video').forEach((v) => { v.pause(); v.removeAttribute('src'); v.load(); });
+    old.replaceChildren();
+  }, FADE * 1000 + 100);
+
+  if (item.video) {
+    try { await el.play(); }
+    catch { el.muted = true; try { await el.play(); } catch { /* skipped by the guard */ } }
+    const limit = (isFinite(el.duration) && el.duration > 0 ? el.duration : 300) + 5;
+    let done = false;
+    const finish = () => { if (!done) { done = true; clearTimeout(guard); next(); } };
+    const guard = setTimeout(finish, limit * 1000);
+    el.addEventListener('ended', finish, { once: true });
+    el.addEventListener('error', finish, { once: true });
+    startPrefetch();
+  } else {
+    startPrefetch();
+    setTimeout(next, item.secs * 1000);
+  }
+}
+
+/* ---------- screen handling ---------- */
+
+let wakeLock = null;
+async function keepAwake() {
+  try { if ('wakeLock' in navigator && document.visibilityState === 'visible') wakeLock = await navigator.wakeLock.request('screen'); }
+  catch { /* not supported */ }
+}
+document.addEventListener('visibilitychange', keepAwake);
+
+function goFullscreen() {
+  const d = document.documentElement;
+  (d.requestFullscreen || d.webkitRequestFullscreen || (() => {})).call(d);
+  $('hint').classList.add('hide');
+  document.querySelectorAll('video').forEach((v) => { if (SOUND) v.muted = false; });
+}
+document.addEventListener('click', goFullscreen);
+document.addEventListener('keydown', goFullscreen);
+setTimeout(() => $('hint').classList.add('hide'), 10000);
+
+/* ---------- start ---------- */
+
+(async function start() {
+  keepAwake();
+  playlist = (await loadPlaylist()) || [];
+  next();
+
+  setInterval(async () => {
+    const fresh = await loadPlaylist();
+    if (fresh && !same(fresh, playlist) && !same(fresh, pending)) {
+      pending = fresh;
+      console.log('New playlist received – it starts after the current loop.');
+    }
+  }, REFRESH_MIN * 60000);
+
+  // Reload the page once a day (keeps long-running browsers fresh) – only when online.
+  setTimeout(async function daily() {
+    try { const r = await fetch(CSV_URL, { method: 'HEAD', cache: 'no-store' }); if (r.ok) location.reload(); }
+    catch { setTimeout(daily, 600000); }
+  }, 24 * 3600000);
+})();
+</script>
+</body>
+</html>

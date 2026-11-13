@@ -55,6 +55,7 @@ jobs:
             --media "${{ steps.fetch.outputs.media_dir || 'media' }}" \
             --out _site --base-url "${{ steps.pages.outputs.base_url }}"
           if [ -f drive_state.txt ]; then cp drive_state.txt _site/; fi
+          if [ -d site ]; then cp -r site/. _site/; fi   # player.html etc.
 
       - uses: actions/upload-pages-artifact@v3
         if: steps.fetch.outputs.changed != 'false'

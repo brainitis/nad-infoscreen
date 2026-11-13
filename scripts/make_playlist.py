@@ -154,6 +154,7 @@ def main() -> int:
         "<!doctype html><meta charset='utf-8'><title>NAD Info Screen</title>"
         "<body style='font-family:Lato,sans-serif;max-width:720px;margin:40px auto'>"
         f"<h1>NAD Info Screen</h1><p>Playlist: <a href='{base}/playlist.csv'>{base}/playlist.csv</a></p>"
+        f"<p>Browser player: <a href='{base}/player.html'>{base}/player.html</a></p>"
         f"<ol>{items}</ol>" + (f"<h2>Skipped</h2><ul>{skipped_html}</ul>" if skipped else ""),
         encoding="utf-8")
 
