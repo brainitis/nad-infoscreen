@@ -50,17 +50,35 @@ jobs:
 
       - name: Build playlist.csv
         if: steps.fetch.outputs.changed != 'false'
+        env:
+          SITE_KEY: ${{ secrets.SITE_KEY }}
+          BASE: ${{ steps.pages.outputs.base_url }}
+          MEDIA: ${{ steps.fetch.outputs.media_dir || 'media' }}
+          LEGACY_ROOT: ${{ vars.LEGACY_ROOT }}
         run: |
-          python3 scripts/make_playlist.py \
-            --media "${{ steps.fetch.outputs.media_dir || 'media' }}" \
-            --out _site --base-url "${{ steps.pages.outputs.base_url }}"
+          # Everything is published in a secret folder: <site>/<SITE_KEY>/
+          # The site root only holds an empty page that search engines are told to ignore.
+          if [ -n "$SITE_KEY" ]; then OUT="_site/$SITE_KEY"; URL="$BASE/$SITE_KEY"; else OUT="_site"; URL="$BASE"; echo "::warning::SITE_KEY secret is not set - the site is published at a guessable address"; fi
+          python3 scripts/make_playlist.py --media "$MEDIA" --out "$OUT" --base-url "$URL"
+          if [ -d site ]; then cp -r site/. "$OUT/"; fi        # player.html
           if [ -f drive_state.txt ]; then cp drive_state.txt _site/; fi
-          if [ -d site ]; then cp -r site/. _site/; fi   # player.html etc.
+          # Transition period: while the repository variable LEGACY_ROOT is "true", the playlist
+          # is ALSO published at the old address (<site>/playlist.csv) so the Apple TV keeps
+          # updating until it has been switched to the secret address. Delete the variable afterwards.
+          if [ -n "$SITE_KEY" ] && [ "$LEGACY_ROOT" = "true" ]; then
+            python3 scripts/make_playlist.py --media "$MEDIA" --out _legacy --base-url "$BASE"
+            cp _legacy/playlist.csv _site/ && cp -r _legacy/files _site/
+          fi
+          if [ -n "$SITE_KEY" ]; then
+            printf '<!DOCTYPE html><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title></title>\n' > _site/index.html
+            printf '<!DOCTYPE html><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>404</title>\n' > _site/404.html
+          fi
 
       - uses: actions/upload-pages-artifact@v3
         if: steps.fetch.outputs.changed != 'false'
         with:
           path: _site
+          retention-days: 1
 
       - id: deployment
         if: steps.fetch.outputs.changed != 'false'
