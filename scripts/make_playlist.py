@@ -151,7 +151,7 @@ def main() -> int:
         f"{' (' + r['DisplayDuration'] + ' s)' if r['DisplayDuration'] else ''}</li>" for r in rows)
     skipped_html ="".join(f"<li>{s}</li>" for s in skipped)
     (args.out / "index.html").write_text(
-        "<!doctype html><meta charset='utf-8'><title>NAD Info Screen</title>"
+        "<!doctype html><meta charset='utf-8'><meta name='robots' content='noindex, nofollow'><title>NAD Info Screen</title>"
         "<body style='font-family:Lato,sans-serif;max-width:720px;margin:40px auto'>"
         f"<h1>NAD Info Screen</h1><p>Playlist: <a href='{base}/playlist.csv'>{base}/playlist.csv</a></p>"
         f"<p>Browser player: <a href='{base}/player.html'>{base}/player.html</a></p>"
@@ -159,8 +159,8 @@ def main() -> int:
         encoding="utf-8")
 
     print(f"Playlist: {len(rows)} items")
-    for s in skipped:
-        print(f"::warning::Skipped {s}")
+    if skipped:
+        print(f"::warning::{len(skipped)} file(s) skipped - see the overview page for details")
     return 0
 
 

@@ -84,7 +84,7 @@ def main() -> int:
     media, skipped = [], []
     for it in items:
         if it["mimeType"].startswith("application/vnd.google-apps"):
-            skipped.append(f"{it['name']} (Google Docs/Slides/folder - export it as JPG/PNG/MP4 first)")
+            skipped.append("a Google Docs/Slides file or subfolder (export it as JPG/PNG/MP4 first)")
         else:
             media.append(it)
 
@@ -124,11 +124,11 @@ def main() -> int:
             while chunk := r.read(1 << 20):
                 f.write(chunk)
         total += dst.stat().st_size
-        print(f"Downloaded {name} ({dst.stat().st_size / 1e6:.1f} MB)")
 
     if total > 900e6:
         print(f"::warning::The folder holds {total / 1e9:.2f} GB. GitHub Pages sites may be no larger than 1 GB.")
 
+    print(f"Downloaded {len(media)} files ({total / 1e6:.1f} MB).")
     output("changed", "true")
     output("media_dir", str(args.out))
     return 0
