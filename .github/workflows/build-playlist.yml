@@ -1,0 +1,98 @@
+# NAD Info Screen: build the WildStream playlist and publish it on GitHub Pages.
+#
+# Source of the media:
+#   - Google Drive (when the repository variable GDRIVE_FOLDER_ID is set):
+#       checked every 15 minutes; the site is only rebuilt when the folder changed.
+#   - otherwise the repository's media/ folder (Mac sync).
+name: Update info screen
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write      # only used for the keep-alive commit
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Fetch media from Google Drive
+        id: fetch
+        if: vars.GDRIVE_FOLDER_ID != ''
+        env:
+          GDRIVE_API_KEY: ${{ secrets.GDRIVE_API_KEY }}
+          GDRIVE_FOLDER_ID: ${{ vars.GDRIVE_FOLDER_ID }}
+          SITE: ${{ steps.pages.outputs.base_url }}
+          FORCE: ${{ github.event_name != 'schedule' }}
+        run: python3 scripts/fetch_gdrive.py --out drive_media
+
+      - name: Install converters (GIF/MOV/HEIC -> MP4/JPG)
+        if: steps.fetch.outputs.changed != 'false'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg libheif-examples
+
+      - name: Build playlist.csv
+        if: steps.fetch.outputs.changed != 'false'
+        env:
+          SITE_KEY: ${{ secrets.SITE_KEY }}
+          BASE: ${{ steps.pages.outputs.base_url }}
+          MEDIA: ${{ steps.fetch.outputs.media_dir || 'media' }}
+          LEGACY_ROOT: ${{ vars.LEGACY_ROOT }}
+        run: |
+          # Everything is published in a secret folder: <site>/<SITE_KEY>/
+          # The site root only holds an empty page that search engines are told to ignore.
+          if [ -n "$SITE_KEY" ]; then OUT="_site/$SITE_KEY"; URL="$BASE/$SITE_KEY"; else OUT="_site"; URL="$BASE"; echo "::warning::SITE_KEY secret is not set - the site is published at a guessable address"; fi
+          python3 scripts/make_playlist.py --media "$MEDIA" --out "$OUT" --base-url "$URL"
+          if [ -d site ]; then cp -r site/. "$OUT/"; fi        # player.html
+          if [ -f drive_state.txt ]; then cp drive_state.txt _site/; fi
+          # Transition period: while the repository variable LEGACY_ROOT is "true", the playlist
+          # is ALSO published at the old address (<site>/playlist.csv) so the Apple TV keeps
+          # updating until it has been switched to the secret address. Delete the variable afterwards.
+          if [ -n "$SITE_KEY" ] && [ "$LEGACY_ROOT" = "true" ]; then
+            python3 scripts/make_playlist.py --media "$MEDIA" --out _legacy --base-url "$BASE"
+            cp _legacy/playlist.csv _site/ && cp -r _legacy/files _site/
+          fi
+          if [ -n "$SITE_KEY" ]; then
+            printf '<!DOCTYPE html><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title></title>\n' > _site/index.html
+            printf '<!DOCTYPE html><meta charset="utf-8"><meta name="robots" content="noindex, nofollow"><title>404</title>\n' > _site/404.html
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.fetch.outputs.changed != 'false'
+        with:
+          path: _site
+          retention-days: 1
+
+      - id: deployment
+        if: steps.fetch.outputs.changed != 'false'
+        uses: actions/deploy-pages@v4
+
+      # GitHub pauses scheduled workflows in repositories without activity for a long
+      # time. An empty commit every ~45 days keeps the 15-minute check running.
+      - name: Keep the schedule active
+        if: github.event_name == 'schedule'
+        run: |
+          last=$(git log -1 --format=%ct)
+          if [ $(( ( $(date +%s) - last ) / 86400 )) -ge 45 ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit --allow-empty -q -m "Keep scheduled updates active"
+            git push -q
+          fi
